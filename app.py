@@ -1,12 +1,14 @@
 import os
 import json
 import re
+import traceback
 from flask import Flask, request, jsonify
 from bs4 import BeautifulSoup, NavigableString
 from openai import OpenAI
 
 app = Flask(__name__)
 
+# Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def extract_text_nodes(soup):
@@ -17,9 +19,7 @@ def extract_text_nodes(soup):
             if isinstance(child, NavigableString):
                 text = str(child).strip()
                 if text and not isinstance(child, (BeautifulSoup,)):
-                    if child.parent.name not in [
-                        "script", "style", "code", "pre", "svg"
-                    ]:
+                    if child.parent.name not in ["script", "style", "code", "pre", "svg"]:
                         texts.append((child, text))
             elif child.name:
                 traverse(child)
@@ -27,12 +27,13 @@ def extract_text_nodes(soup):
     traverse(soup)
     return texts
 
+
 def translate_texts(texts, target_lang="de"):
     results = []
     CHUNK_SIZE = 20
 
     for i in range(0, len(texts), CHUNK_SIZE):
-        chunk = texts[i:i+CHUNK_SIZE]
+        chunk = texts[i:i + CHUNK_SIZE]
         items = [{"i": j, "t": t} for j, (_, t) in enumerate(chunk)]
         prompt = (
             f"You are a professional translator. Translate the following JSON text values into {target_lang}. "
@@ -54,13 +55,16 @@ def translate_texts(texts, target_lang="de"):
 
         try:
             parsed = json.loads(re.search(r"\{.*\}", data, re.DOTALL).group(0))
-            for idx, item in enumerate(parsed.get("items", [])):
+            for _, item in enumerate(parsed.get("items", [])):
                 results.append(item["t"])
-        except Exception:
+        except Exception as parse_error:
+            print("⚠️ JSON Parse Error:", parse_error)
+            print("Raw data from GPT:", data)
             for _, t in chunk:
                 results.append(t)
 
     return results
+
 
 @app.route("/translate", methods=["POST"])
 def translate_html():
@@ -74,8 +78,10 @@ def translate_html():
 
         soup = BeautifulSoup(html, "html.parser")
         nodes = extract_text_nodes(soup)
+        print(f"🧩 Found {len(nodes)} text nodes to translate...")
 
         translated_texts = translate_texts(nodes, target_lang)
+        print(f"✅ Translated {len(translated_texts)} nodes successfully.")
 
         for (node, _), new_text in zip(nodes, translated_texts):
             node.replace_with(new_text)
@@ -90,7 +96,10 @@ def translate_html():
         return jsonify({"html": output_html, "stats": stats})
 
     except Exception as e:
+        print("🔥 ERROR TRACEBACK ↓↓↓")
+        print(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
