@@ -1,102 +1,106 @@
 import os
 import json
-import re
-import traceback
+from urllib.parse import unquote
 from flask import Flask, request, jsonify
 from bs4 import BeautifulSoup, NavigableString
 from openai import OpenAI
 
+# === Flask Setup ===
 app = Flask(__name__)
+app.config['JSON_AS_ASCII'] = False
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max
+
+# === OpenAI Setup ===
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
+# === Helpers ===
 def extract_text_nodes(soup):
-    texts = []
+    """Collect all visible text nodes except code/style/script/svg."""
+    nodes = []
 
-    def traverse(node):
+    def walk(node):
         for child in node.children:
             if isinstance(child, NavigableString):
                 text = str(child).strip()
-                if text and not isinstance(child, (BeautifulSoup,)):
-                    if child.parent.name not in ["script", "style", "code", "pre", "svg"]:
-                        texts.append((child, text))
-            elif getattr(child, "children", None):
-                traverse(child)
+                if text and child.parent.name not in ["script", "style", "code", "pre", "svg"]:
+                    nodes.append((child, text))
+            elif hasattr(child, "children"):
+                walk(child)
 
-    traverse(soup)
-    return texts
+    walk(soup)
+    return nodes
 
 
-def translate_texts(texts, target_lang="de"):
-    results = []
+def translate_chunk(texts, target_lang="de"):
+    """Send chunked text to GPT model for translation."""
     CHUNK_SIZE = 20
+    results = []
 
     for i in range(0, len(texts), CHUNK_SIZE):
-        chunk = texts[i:i+CHUNK_SIZE]
-        items = [{"i": j, "t": t} for j, (_, t) in enumerate(chunk)]
+        chunk = texts[i:i + CHUNK_SIZE]
+        data = {"items": [{"i": j, "t": t} for j, t in enumerate(chunk)]}
 
         prompt = (
-            f"You are a professional translator. Translate the following JSON text values into {target_lang}. "
-            "Keep punctuation, line breaks, HTML entities, and order exactly. "
-            "Return only JSON with translated values.\n\n"
-            f"{json.dumps({'items': items}, ensure_ascii=False)}"
+            f"You are a professional translator. Translate all JSON text values below into {target_lang}. "
+            "Preserve punctuation, whitespace, HTML entities, and order. "
+            "Return only valid JSON with translated values.\n\n"
+            f"{json.dumps(data, ensure_ascii=False)}"
         )
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0,
             messages=[
-                {"role": "system", "content": "You translate text only, not code or HTML."},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": "Translate text only, do not alter JSON or HTML."},
+                {"role": "user", "content": prompt},
             ],
         )
 
-        data = response.choices[0].message.content.strip()
-        print("DEBUG RAW RESPONSE:", data)  # ✅ დაეხმარება შესამოწმებლად
+        output = response.choices[0].message.content.strip()
 
         try:
-            match = re.search(r"\{.*\}", data, re.DOTALL)
-            parsed = json.loads(match.group(0))
+            parsed = json.loads(output)
             for item in parsed.get("items", []):
-                results.append(item["t"])
-        except Exception as e:
-            print("JSON parse error:", e)
-            traceback.print_exc()
-            for _, t in chunk:
-                results.append(t)
+                results.append(item.get("t", ""))
+        except Exception:
+            # fallback: return same texts
+            results.extend(chunk)
 
     return results
 
 
+# === Route ===
 @app.route("/translate", methods=["POST"])
 def translate_html():
     try:
+        raw_body = request.data.decode("utf-8")
+        print("RAW BODY >>>", raw_body)  # debug log
+
         data = request.get_json(force=True)
-        html = data.get("html")
+        html = unquote(data.get("html", ""))
         target_lang = data.get("target_lang", "de")
 
-        if not html:
-            return jsonify({"error": "Missing 'html' field"}), 400
+        if not html.strip():
+            return jsonify({"error": "Missing or empty 'html' field"}), 400
 
         soup = BeautifulSoup(html, "html.parser")
         nodes = extract_text_nodes(soup)
-        translated_texts = translate_texts(nodes, target_lang)
+        texts = [t for _, t in nodes]
 
-        for (node, _), new_text in zip(nodes, translated_texts):
+        translated = translate_chunk(texts, target_lang)
+
+        for (node, _), new_text in zip(nodes, translated):
             node.replace_with(new_text)
 
         return jsonify({
             "html": str(soup),
-            "stats": {
-                "found": len(nodes),
-                "translated": len(translated_texts),
-                "model": "gpt-4o-mini"
-            }
+            "stats": {"found": len(nodes), "translated": len(translated)},
+            "lang": target_lang,
+            "model": "gpt-4o-mini"
         })
 
     except Exception as e:
-        print("FULL ERROR TRACE:")
-        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
