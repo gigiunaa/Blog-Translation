@@ -7,9 +7,8 @@ from bs4 import BeautifulSoup, NavigableString
 from openai import OpenAI
 
 app = Flask(__name__)
-
-# Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 
 def extract_text_nodes(soup):
     texts = []
@@ -21,7 +20,7 @@ def extract_text_nodes(soup):
                 if text and not isinstance(child, (BeautifulSoup,)):
                     if child.parent.name not in ["script", "style", "code", "pre", "svg"]:
                         texts.append((child, text))
-            elif child.name:
+            elif getattr(child, "children", None):
                 traverse(child)
 
     traverse(soup)
@@ -33,8 +32,9 @@ def translate_texts(texts, target_lang="de"):
     CHUNK_SIZE = 20
 
     for i in range(0, len(texts), CHUNK_SIZE):
-        chunk = texts[i:i + CHUNK_SIZE]
+        chunk = texts[i:i+CHUNK_SIZE]
         items = [{"i": j, "t": t} for j, (_, t) in enumerate(chunk)]
+
         prompt = (
             f"You are a professional translator. Translate the following JSON text values into {target_lang}. "
             "Keep punctuation, line breaks, HTML entities, and order exactly. "
@@ -52,14 +52,16 @@ def translate_texts(texts, target_lang="de"):
         )
 
         data = response.choices[0].message.content.strip()
+        print("DEBUG RAW RESPONSE:", data)  # ✅ დაეხმარება შესამოწმებლად
 
         try:
-            parsed = json.loads(re.search(r"\{.*\}", data, re.DOTALL).group(0))
-            for _, item in enumerate(parsed.get("items", [])):
+            match = re.search(r"\{.*\}", data, re.DOTALL)
+            parsed = json.loads(match.group(0))
+            for item in parsed.get("items", []):
                 results.append(item["t"])
-        except Exception as parse_error:
-            print("⚠️ JSON Parse Error:", parse_error)
-            print("Raw data from GPT:", data)
+        except Exception as e:
+            print("JSON parse error:", e)
+            traceback.print_exc()
             for _, t in chunk:
                 results.append(t)
 
@@ -78,26 +80,23 @@ def translate_html():
 
         soup = BeautifulSoup(html, "html.parser")
         nodes = extract_text_nodes(soup)
-        print(f"🧩 Found {len(nodes)} text nodes to translate...")
-
         translated_texts = translate_texts(nodes, target_lang)
-        print(f"✅ Translated {len(translated_texts)} nodes successfully.")
 
         for (node, _), new_text in zip(nodes, translated_texts):
             node.replace_with(new_text)
 
-        output_html = str(soup)
-        stats = {
-            "found": len(nodes),
-            "translated": len(translated_texts),
-            "model": "gpt-4o-mini",
-        }
-
-        return jsonify({"html": output_html, "stats": stats})
+        return jsonify({
+            "html": str(soup),
+            "stats": {
+                "found": len(nodes),
+                "translated": len(translated_texts),
+                "model": "gpt-4o-mini"
+            }
+        })
 
     except Exception as e:
-        print("🔥 ERROR TRACEBACK ↓↓↓")
-        print(traceback.format_exc())
+        print("FULL ERROR TRACE:")
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
