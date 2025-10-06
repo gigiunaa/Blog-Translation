@@ -3,54 +3,63 @@ import openai
 import os
 import re
 from bs4 import BeautifulSoup
+import traceback
 
 app = Flask(__name__)
 
 # OpenAI API Key
-openai.api_key = os.getenv('OPENAI_API_KEY', 'your-key-here')
+openai.api_key = os.getenv('OPENAI_API_KEY')
 
-def split_html_intelligently(html_content, max_chunk_size=4000):
-    soup = BeautifulSoup(html_content, 'html.parser')
-    head = soup.find('head')
-    body = soup.find('body')
-    
-    head_content = str(head) if head else ""
-    chunks = []
-    current_chunk = ""
-    
-    if body:
-        for element in body.children:
-            element_str = str(element)
-            
-            if len(element_str) > max_chunk_size:
-                paragraphs = re.split(r'(</p>|</div>|</li>|</tr>)', element_str)
-                for i in range(0, len(paragraphs), 2):
-                    p = paragraphs[i] + (paragraphs[i+1] if i+1 < len(paragraphs) else '')
-                    if len(current_chunk) + len(p) > max_chunk_size:
-                        if current_chunk:
-                            chunks.append(current_chunk)
-                        current_chunk = p
-                    else:
-                        current_chunk += p
-            else:
-                if len(current_chunk) + len(element_str) > max_chunk_size:
-                    chunks.append(current_chunk)
-                    current_chunk = element_str
-                else:
-                    current_chunk += element_str
+# შეამოწმე API key-ის არსებობა
+if not openai.api_key or openai.api_key == 'your-key-here':
+    print("⚠️ WARNING: OpenAI API key is not set!")
+
+def split_html_intelligently(html_content, max_chunk_size=3000):
+    """HTML-ის დაყოფა ლოგიკურ ნაწილებად"""
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        head = soup.find('head')
+        body = soup.find('body')
         
-        if current_chunk:
-            chunks.append(current_chunk)
-    
-    return head_content, chunks
+        head_content = str(head) if head else ""
+        chunks = []
+        current_chunk = ""
+        
+        if body:
+            for element in body.children:
+                element_str = str(element)
+                
+                if len(element_str) > max_chunk_size:
+                    paragraphs = re.split(r'(</p>|</div>|</li>|</tr>)', element_str)
+                    for i in range(0, len(paragraphs), 2):
+                        p = paragraphs[i] + (paragraphs[i+1] if i+1 < len(paragraphs) else '')
+                        if len(current_chunk) + len(p) > max_chunk_size:
+                            if current_chunk:
+                                chunks.append(current_chunk)
+                            current_chunk = p
+                        else:
+                            current_chunk += p
+                else:
+                    if len(current_chunk) + len(element_str) > max_chunk_size:
+                        chunks.append(current_chunk)
+                        current_chunk = element_str
+                    else:
+                        current_chunk += element_str
+            
+            if current_chunk:
+                chunks.append(current_chunk)
+        
+        return head_content, chunks
+    except Exception as e:
+        print(f"❌ Error in split_html_intelligently: {str(e)}")
+        traceback.print_exc()
+        raise
 
 def translate_chunk_with_openai(html_chunk, model="gpt-4o-mini", target_lang="German"):
-    """
-    HTML ნაწილის თარგმნა OpenAI-ს მეშვეობით
-    
-    target_lang შეიძლება იყოს: "German", "Georgian", "Spanish", "French" და ა.შ.
-    """
+    """HTML ნაწილის თარგმნა OpenAI-ს მეშვეობით"""
     try:
+        print(f"🔄 Translating chunk ({len(html_chunk)} chars) to {target_lang}...")
+        
         response = openai.chat.completions.create(
             model=model,
             messages=[
@@ -72,35 +81,59 @@ RULES:
             temperature=0.3,
             max_tokens=8000
         )
-        return response.choices[0].message.content.strip()
+        
+        result = response.choices[0].message.content.strip()
+        print(f"✅ Chunk translated successfully ({len(result)} chars)")
+        return result
+        
     except Exception as e:
-        print(f"Error: {str(e)}")
-        return html_chunk
+        error_msg = str(e)
+        print(f"❌ Translation error: {error_msg}")
+        traceback.print_exc()
+        
+        # თუ OpenAI-ს შეცდომაა, დავაბრუნოთ დეტალური ინფორმაცია
+        if "api_key" in error_msg.lower():
+            raise Exception("OpenAI API key is invalid or not set")
+        elif "rate_limit" in error_msg.lower():
+            raise Exception("OpenAI rate limit exceeded")
+        elif "insufficient_quota" in error_msg.lower():
+            raise Exception("OpenAI account has insufficient quota/credits")
+        else:
+            raise Exception(f"OpenAI API error: {error_msg}")
 
 @app.route('/translate-html', methods=['POST'])
 def translate_html():
     try:
+        print("\n" + "="*50)
+        print("📥 New translation request received")
+        
         data = request.get_json()
         
         if not data or 'html' not in data:
-            return jsonify({'error': 'HTML required'}), 400
+            return jsonify({'error': 'HTML content is required in request body'}), 400
         
         html_content = data['html']
         model = data.get('model', 'gpt-4o-mini')
-        target_lang = data.get('target_lang', 'German')  # 🆕 ნაგულისხმევად გერმანული
+        target_lang = data.get('target_lang', 'German')
         
-        print(f"Processing {len(html_content)} characters")
-        print(f"Target language: {target_lang}")
+        print(f"📊 HTML size: {len(html_content)} characters")
+        print(f"🎯 Target language: {target_lang}")
+        print(f"🤖 Model: {model}")
         
+        # HTML-ის დაყოფა
+        print("✂️ Splitting HTML into chunks...")
         head_content, body_chunks = split_html_intelligently(html_content)
-        print(f"Split into {len(body_chunks)} chunks")
+        print(f"✅ Split into {len(body_chunks)} chunks")
         
+        # თითოეული chunk-ის თარგმნა
         translated_chunks = []
         for i, chunk in enumerate(body_chunks):
-            print(f"Translating {i+1}/{len(body_chunks)} to {target_lang}...")
+            print(f"\n📝 Processing chunk {i+1}/{len(body_chunks)}...")
             translated = translate_chunk_with_openai(chunk, model, target_lang)
             translated_chunks.append(translated)
         
+        # საბოლოო HTML-ის აწყობა
+        print("\n🔨 Assembling final HTML...")
         body_content = ''.join(translated_chunks)
         
         soup = BeautifulSoup(html_content, 'html.parser')
@@ -117,6 +150,9 @@ def translate_html():
 </body>
 </html>"""
         
+        print(f"✅ Translation completed! Final size: {len(final_html)} chars")
+        print("="*50 + "\n")
+        
         return jsonify({
             'success': True,
             'translated_html': final_html,
@@ -125,12 +161,39 @@ def translate_html():
         })
     
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        error_msg = str(e)
+        print(f"\n❌ ERROR: {error_msg}")
+        traceback.print_exc()
+        print("="*50 + "\n")
+        
+        return jsonify({
+            'success': False,
+            'error': error_msg,
+            'details': traceback.format_exc()
+        }), 500
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'healthy', 'supported_languages': ['German', 'Georgian', 'Spanish', 'French', 'Russian']})
+    """Health check endpoint"""
+    api_key_status = "✅ Set" if openai.api_key and openai.api_key != 'your-key-here' else "❌ Missing"
+    
+    return jsonify({
+        'status': 'healthy',
+        'service': 'HTML Translator',
+        'supported_languages': ['German', 'Georgian', 'Spanish', 'French', 'Russian'],
+        'openai_api_key': api_key_status
+    })
+
+@app.route('/test', methods=['GET'])
+def test():
+    """Test endpoint to check if service is running"""
+    return jsonify({
+        'message': 'Service is running!',
+        'openai_configured': bool(openai.api_key and openai.api_key != 'your-key-here')
+    })
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
+    print(f"\n🚀 Starting server on port {port}...")
+    print(f"🔑 OpenAI API Key: {'✅ Configured' if openai.api_key else '❌ Not Set'}\n")
     app.run(host='0.0.0.0', port=port)
