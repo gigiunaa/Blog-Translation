@@ -44,24 +44,29 @@ def split_html_intelligently(html_content, max_chunk_size=4000):
     
     return head_content, chunks
 
-def translate_chunk_with_openai(html_chunk, model="gpt-4o-mini"):
+def translate_chunk_with_openai(html_chunk, model="gpt-4o-mini", target_lang="German"):
+    """
+    HTML ნაწილის თარგმნა OpenAI-ს მეშვეობით
+    
+    target_lang შეიძლება იყოს: "German", "Georgian", "Spanish", "French" და ა.შ.
+    """
     try:
         response = openai.chat.completions.create(
             model=model,
             messages=[
                 {
                     "role": "system",
-                    "content": """You are a professional HTML translator. Translate from English to Georgian while preserving ALL HTML tags, classes, and styles.
+                    "content": f"""You are a professional HTML translator. Translate from English to {target_lang} while preserving ALL HTML tags, classes, and styles.
 
 RULES:
-1. Translate ONLY visible text
+1. Translate ONLY visible text content
 2. NEVER translate HTML tags, attributes, or CSS
 3. Preserve exact HTML structure
-4. Return ONLY translated HTML"""
+4. Return ONLY translated HTML without any explanations"""
                 },
                 {
                     "role": "user",
-                    "content": f"Translate to Georgian:\n\n{html_chunk}"
+                    "content": f"Translate this HTML to {target_lang}:\n\n{html_chunk}"
                 }
             ],
             temperature=0.3,
@@ -82,16 +87,18 @@ def translate_html():
         
         html_content = data['html']
         model = data.get('model', 'gpt-4o-mini')
+        target_lang = data.get('target_lang', 'German')  # 🆕 ნაგულისხმევად გერმანული
         
         print(f"Processing {len(html_content)} characters")
+        print(f"Target language: {target_lang}")
         
         head_content, body_chunks = split_html_intelligently(html_content)
         print(f"Split into {len(body_chunks)} chunks")
         
         translated_chunks = []
         for i, chunk in enumerate(body_chunks):
-            print(f"Translating {i+1}/{len(body_chunks)}...")
-            translated = translate_chunk_with_openai(chunk, model)
+            print(f"Translating {i+1}/{len(body_chunks)} to {target_lang}...")
+            translated = translate_chunk_with_openai(chunk, model, target_lang)
             translated_chunks.append(translated)
         
         body_content = ''.join(translated_chunks)
@@ -113,7 +120,8 @@ def translate_html():
         return jsonify({
             'success': True,
             'translated_html': final_html,
-            'chunks_processed': len(body_chunks)
+            'chunks_processed': len(body_chunks),
+            'target_language': target_lang
         })
     
     except Exception as e:
@@ -121,7 +129,7 @@ def translate_html():
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'healthy'})
+    return jsonify({'status': 'healthy', 'supported_languages': ['German', 'Georgian', 'Spanish', 'French', 'Russian']})
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
