@@ -50,15 +50,15 @@ def split_html_intelligently(html_content, max_chunk_size=1800):
                     else:
                         current_chunk += element_str
 
-        if current_chunk:
-            chunks.append(current_chunk)
+            if current_chunk:
+                chunks.append(current_chunk)
 
         return head_content, chunks
-
     except Exception as e:
         print(f"❌ Error in split_html_intelligently: {e}")
         traceback.print_exc()
         raise
+
 
 # ------------------------------------------
 # Helper: Translate single chunk
@@ -88,6 +88,7 @@ RULES:
                 max_tokens=8000
             )
         except Exception as e:
+            # fallback if model fails
             if "model_not_found" in str(e):
                 print("⚠️ Model not found, retrying with gpt-4o ...")
                 response = client.chat.completions.create(
@@ -112,6 +113,7 @@ RULES:
         traceback.print_exc()
         raise Exception(f"OpenAI API error: {error_msg}")
 
+
 # ------------------------------------------
 # Endpoint: /translate-html
 # ------------------------------------------
@@ -132,8 +134,8 @@ def translate_html():
         print(f"📊 HTML size: {len(html_content)} chars")
         print(f"🎯 Target language: {target_lang}")
         print(f"🤖 Model: {model}")
-        print("✂️ Splitting HTML into chunks ...")
 
+        print("✂️ Splitting HTML into chunks ...")
         head_content, body_chunks = split_html_intelligently(html_content)
         print(f"✅ Split into {len(body_chunks)} chunks")
 
@@ -143,8 +145,9 @@ def translate_html():
             translated = translate_chunk_with_openai(chunk, model, target_lang)
             translated_chunks.append(translated)
 
+            # RAM optimization: cleanup between chunks
             gc.collect()
-            time.sleep(1)
+            time.sleep(1)  # pause for memory & API stability
 
         print("\n🔨 Assembling final HTML ...")
         body_content = ''.join(translated_chunks)
@@ -152,14 +155,18 @@ def translate_html():
         soup = BeautifulSoup(html_content, 'html.parser')
         body_tag = soup.find('body')
         body_attrs = ''
-
         if body_tag:
             attrs = body_tag.attrs
             body_attrs = ' '.join(
                 [f'{k}="{v}"' if isinstance(v, str) else f'{k}="{" ".join(v)}"' for k, v in attrs.items()]
             )
 
-        final_html = f"""<html> {head_content} <body {body_attrs}> {body_content} </body> </html>"""
+        final_html = f"""<html>
+{head_content}
+<body {body_attrs}>
+{body_content}
+</body>
+</html>"""
 
         print(f"✅ Translation completed! Final size: {len(final_html)} chars")
         print("=" * 50 + "\n")
@@ -178,6 +185,7 @@ def translate_html():
         print("=" * 50 + "\n")
         return jsonify({'success': False, 'error': error_msg}), 500
 
+
 # ------------------------------------------
 # Health endpoints
 # ------------------------------------------
@@ -191,12 +199,14 @@ def health():
         'openai_api_key': api_key_status
     })
 
+
 @app.route('/test', methods=['GET'])
 def test():
     return jsonify({
         'message': 'Service is running!',
         'openai_configured': bool(os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_API_KEY") != "your-key-here")
     })
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
