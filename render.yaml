@@ -3,7 +3,7 @@ services:
     name: html-translator
     env: python
     buildCommand: pip install --upgrade --force-reinstall -r requirements.txt
-    startCommand: gunicorn app:app --workers=1 --timeout 600
+    startCommand: gunicorn app:app --workers=1 --timeout=900 --threads=1
     envVars:
       - key: OPENAI_API_KEY
         sync: false
