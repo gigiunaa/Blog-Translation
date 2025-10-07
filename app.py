@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-import openai
+from openai import OpenAI
 import os
 import re
 from bs4 import BeautifulSoup
@@ -7,11 +7,11 @@ import traceback
 
 app = Flask(__name__)
 
-# OpenAI API Key
-openai.api_key = os.getenv('OPENAI_API_KEY')
+# OpenAI API Client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # შეამოწმე API key-ის არსებობა
-if not openai.api_key or openai.api_key == 'your-key-here':
+if not os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY") == "your-key-here":
     print("⚠️ WARNING: OpenAI API key is not set!")
 
 def split_html_intelligently(html_content, max_chunk_size=3000):
@@ -55,12 +55,13 @@ def split_html_intelligently(html_content, max_chunk_size=3000):
         traceback.print_exc()
         raise
 
+
 def translate_chunk_with_openai(html_chunk, model="gpt-4o-mini", target_lang="German"):
     """HTML ნაწილის თარგმნა OpenAI-ს მეშვეობით"""
     try:
         print(f"🔄 Translating chunk ({len(html_chunk)} chars) to {target_lang}...")
         
-        response = openai.chat.completions.create(
+        response = client.chat.completions.create(
             model=model,
             messages=[
                 {
@@ -91,7 +92,6 @@ RULES:
         print(f"❌ Translation error: {error_msg}")
         traceback.print_exc()
         
-        # თუ OpenAI-ს შეცდომაა, დავაბრუნოთ დეტალური ინფორმაცია
         if "api_key" in error_msg.lower():
             raise Exception("OpenAI API key is invalid or not set")
         elif "rate_limit" in error_msg.lower():
@@ -101,6 +101,7 @@ RULES:
         else:
             raise Exception(f"OpenAI API error: {error_msg}")
 
+
 @app.route('/translate-html', methods=['POST'])
 def translate_html():
     try:
@@ -108,7 +109,6 @@ def translate_html():
         print("📥 New translation request received")
         
         data = request.get_json()
-        
         if not data or 'html' not in data:
             return jsonify({'error': 'HTML content is required in request body'}), 400
         
@@ -120,19 +120,16 @@ def translate_html():
         print(f"🎯 Target language: {target_lang}")
         print(f"🤖 Model: {model}")
         
-        # HTML-ის დაყოფა
         print("✂️ Splitting HTML into chunks...")
         head_content, body_chunks = split_html_intelligently(html_content)
         print(f"✅ Split into {len(body_chunks)} chunks")
         
-        # თითოეული chunk-ის თარგმნა
         translated_chunks = []
         for i, chunk in enumerate(body_chunks):
             print(f"\n📝 Processing chunk {i+1}/{len(body_chunks)}...")
             translated = translate_chunk_with_openai(chunk, model, target_lang)
             translated_chunks.append(translated)
         
-        # საბოლოო HTML-ის აწყობა
         print("\n🔨 Assembling final HTML...")
         body_content = ''.join(translated_chunks)
         
@@ -172,10 +169,11 @@ def translate_html():
             'details': traceback.format_exc()
         }), 500
 
+
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
-    api_key_status = "✅ Set" if openai.api_key and openai.api_key != 'your-key-here' else "❌ Missing"
+    api_key_status = "✅ Set" if os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_API_KEY") != 'your-key-here' else "❌ Missing"
     
     return jsonify({
         'status': 'healthy',
@@ -184,16 +182,18 @@ def health():
         'openai_api_key': api_key_status
     })
 
+
 @app.route('/test', methods=['GET'])
 def test():
     """Test endpoint to check if service is running"""
     return jsonify({
         'message': 'Service is running!',
-        'openai_configured': bool(openai.api_key and openai.api_key != 'your-key-here')
+        'openai_configured': bool(os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_API_KEY") != 'your-key-here')
     })
+
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     print(f"\n🚀 Starting server on port {port}...")
-    print(f"🔑 OpenAI API Key: {'✅ Configured' if openai.api_key else '❌ Not Set'}\n")
+    print(f"🔑 OpenAI API Key: {'✅ Configured' if os.getenv('OPENAI_API_KEY') else '❌ Not Set'}\n")
     app.run(host='0.0.0.0', port=port)
